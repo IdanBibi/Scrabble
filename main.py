@@ -4,24 +4,22 @@ import re
 
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder
-from sklearn.compose import make_column_transformer
 from sklearn.model_selection import GridSearchCV
 
 from sklearn.linear_model import LinearRegression
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
-from sklearn.ensemble import RandomForestRegressor
+
 from tqdm import tqdm
+import joblib
+import argparse
 
-from sklearn.inspection import permutation_importance
-import shap
 
-
-def categorize_location(loc):
+def categorize_location(locations, loc):
     """
     check if a location is in a predefined category.
+    :param locations: a dictionary with locations and their category.
     :param loc: Location to check.
     :return: int: 1 if location is in a category, 0 otherwise.
     """
@@ -56,13 +54,26 @@ def swap_elements(lst):
         numbers = ''.join(filter(str.isdigit, element))
         letters = ''.join(filter(str.isalpha, element))
 
-        # Swap only if the letter is first in the original string
         if element[0].isalpha():
             swapped_element = numbers + letters
         else:
             swapped_element = letters + numbers
         swapped.append(swapped_element)
     return swapped
+
+
+def bot_encoding(gr):
+    """
+    Encoding the bot name in each group
+    :param gr: Grouped by object.
+    :return: Encoded bot names.
+    """
+    nicknames = gr.nickname
+    is_bot = nicknames.isin(['BetterBot', 'STEEBot', 'HastyBot'])
+    bot_name = nicknames[is_bot]
+    bot_name = bot_name.values[0]
+    nicknames = nicknames.replace(nicknames[~is_bot].values[0], bot_name)
+    return nicknames
 
 
 def feature_engineering_turns(turns):
@@ -93,7 +104,7 @@ def feature_engineering_turns(turns):
     turns['hard_letters'] = turns["move"].apply(lambda x: len([letter for letter in x if letter in hard_letters]))
     turns['medium_letters'] = turns["move"].apply(lambda x: len([letter for letter in x if letter in medium_letters]))
     turns['easy_letters'] = turns["move"].apply(lambda x: len([letter for letter in x if letter in easy_letters]))
-    turns['loc_category'] = turns['location'].apply(categorize_location)
+    turns['loc_category'] = turns['location'].apply(lambda x: categorize_location(locations, x))
 
     turns_groupby = turns.groupby(['game_id', 'nickname']).agg(
         mean_points=('points', 'mean'),
@@ -110,6 +121,7 @@ def feature_engineering_turns(turns):
         max_rack_usage=('rack_usage', 'max'),
         min_rack_usage=('rack_usage', 'min'),
         num_special_loc=('loc_category', 'sum'),
+        mean_special_loc=('loc_category', 'mean'),
         mean_hard_letters=('hard_letters', 'mean'),
         max_hard_letters=('hard_letters', 'max'),
         sum_hard_letters=('hard_letters', 'sum'),
@@ -124,21 +136,6 @@ def feature_engineering_turns(turns):
     return turns_groupby
 
 
-def feature_engineering_games(games):
-    """
-    Perform feature engineering on the 'games' DataFrame.
-    :param games: turns dataframe which holds the information of each game.
-    :return: A new pandas DataFrame with additional features derived from the original data.
-    """
-    games["created_at"] = pd.to_datetime(games["created_at"])
-    games["created_at_month"] = games["created_at"].dt.month
-    games["created_at_day"] = games["created_at"].dt.day
-    games["created_at_hour"] = games["created_at"].dt.hour
-    games["created_at_day_of_week"] = games["created_at"].dt.dayofweek
-    games['is_winner_first'] = games.apply(lambda x: is_winner_first(x['first'], x['winner']), axis=1)
-    return games
-
-
 def merge_datasets(train, test, games, turns):
     """
     Merges all the given datasets.
@@ -150,8 +147,21 @@ def merge_datasets(train, test, games, turns):
     """
     train_test_merged = pd.concat([train, test], axis=0).sort_values('game_id')
     full_df = pd.merge(pd.merge(train_test_merged, turns), games)
+
+    full_df["created_at"] = pd.to_datetime(full_df["created_at"])
     full_df['score_per_move'] = full_df['score'] / full_df['num_moves']
+
+    full_df["created_at_month"] = full_df["created_at"].dt.month
+    full_df["created_at_day"] = full_df["created_at"].dt.day
+    full_df["created_at_hour"] = full_df["created_at"].dt.hour
+    full_df["created_at_day_of_week"] = full_df["created_at"].dt.dayofweek
+    full_df['is_first_winner'] = full_df.apply(lambda x: is_first_winner(x['first'], x['winner']), axis=1)
     full_df['is_first'] = full_df.apply(lambda x: x['nickname'] == x['first'], axis=1)
+
+    bot_difficulty = full_df.groupby('game_id').apply(bot_encoding).values
+    bot_difficulty = pd.Series(bot_difficulty).replace({'BetterBot': 1, 'STEEBot': 2, 'HastyBot': 3})
+    full_df['bot_difficulty'] = bot_difficulty
+
     full_df = pd.get_dummies(full_df,
                              columns=['initial_time_seconds', 'time_control_name', 'game_end_reason', 'lexicon',
                                       'increment_seconds', 'rating_mode', 'max_overtime_minutes']).drop(
@@ -197,90 +207,150 @@ def preprocess_data(train, test, games, turns):
     :return: merged dataset after feature engineering.
     """
     turns_fe = feature_engineering_turns(turns)
-    games_fe = feature_engineering_games(games)
-    full_df = merge_datasets(train, test, games_fe, turns_fe)
+    full_df = merge_datasets(train, test, games, turns_fe)
     return full_df
 
 
-def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, n_splits=5):
+def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, print_rmse=False):
     """
     Evaluates multiple models with K-Fold cross-validation and hyperparameter tuning.
     :param X: Features of the training set.
     :param y: Target variable of the training set.
     :param X_test: Features of the test set.
-    :param n_splits: Number of splits for K-Fold cross-validation. Default is 5.
+    :param print_rmse: Boolean value which indicates if to print the rmse values.
     :return: A tuple containing three elements in the following order:
            model_rmse (dict): Dictionary of RMSE values for each model.
            best_model_predictions (Series or array): Predictions made by the best model.
            best_model (model object): The best performing model after tuning.
     """
     models = {
-        'LinearRegression': LinearRegression(),
-        'LGBMRegressor': LGBMRegressor(verbose=-1),
-        'CatBoostRegressor': CatBoostRegressor(verbose=False, iterations=100),
-        'RandomForestRegressor': RandomForestRegressor()
+        'LGBMRegressor': LGBMRegressor(verbose=-1, objective='rmse'),
+        'CatBoostRegressor': CatBoostRegressor(verbose=False),
     }
 
-    # Hyperparameter grids for each model
     param_grids = {
-        'LinearRegression': {'normalize': [True, False]},
-        'LGBMRegressor': {'num_leaves': [15, 31, 50], 'learning_rate': [0.1, 0.05], 'n_estimators': [50, 100, 300]},
-        'CatBoostRegressor': {'depth': [4, 6, 8, 10], 'learning_rate': [0.1, 0.05]},
-        'RandomForestRegressor': {'n_estimators': [50, 100, 200], 'max_depth': [10, 20]}
+        'LGBMRegressor': {'num_leaves': [15, 31, 50], 'learning_rate': [0.1, 0.05, 0.01],
+                          'n_estimators': [50, 100, 300, 500, 1000], 'max_depth': [3, 4]},
+        'CatBoostRegressor': {'depth': [4, 6, 8, 10], 'learning_rate': [0.1, 0.05, 0.01], 'iterations': [50, 100, 200]},
     }
 
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-    model_rmse = {name: 0 for name in models}
-    model_predictions = {name: [] for name in models}
+    model_rmse_train = {name: 0 for name in models}
+    model_rmse_val = {name: 0 for name in models}
+    models_predictions = {}
+    best_models = {}
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.3, random_state=20)
 
-    for train_index, val_index in tqdm(kf.split(X)):
-        X_train, X_val = X.iloc[train_index], X.iloc[val_index]
-        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
+    for name, model in tqdm(models.items()):
+        grid_search = GridSearchCV(model, param_grids[name], cv=3, scoring='neg_mean_squared_error')
+        grid_search.fit(X_train, y_train)
+        best_models[name] = grid_search.best_estimator_
 
-        for name, model in models.items():
-            grid_search = GridSearchCV(model, param_grids[name], cv=3, scoring='neg_mean_squared_error')
-            grid_search.fit(X_train, y_train)
-            best_model = grid_search.best_estimator_
+        train_preds = best_models[name].predict(X_train)
+        rmse_train = mean_squared_error(y_train, train_preds, squared=False)
+        model_rmse_train[name] += rmse_train
 
-            val_preds = best_model.predict(X_val)
-            rmse = mean_squared_error(y_val, val_preds, squared=False)
-            model_rmse[name] += rmse / n_splits
+        val_preds = best_models[name].predict(X_val)
+        rmse_val = mean_squared_error(y_val, val_preds, squared=False)
+        model_rmse_val[name] += rmse_val
 
-            test_preds = best_model.predict(X_test)
-            model_predictions[name].append(test_preds)
+        test_preds = best_models[name].predict(X_test)
+        models_predictions[name] = test_preds
 
-    for name in models:
-        model_predictions[name] = np.mean(model_predictions[name], axis=0)
+    best_model_predictions = models_predictions['LGBMRegressor'] * 0.6 + models_predictions['CatBoostRegressor'] * 0.4
 
-    best_model_predictions = model_predictions[min(model_rmse, key=model_rmse.get)]
-    return model_rmse, best_model_predictions, models[min(model_rmse, key=model_rmse.get)]
+    if print_rmse:
+        print(f'Train rmse {model_rmse_train}')
+        print(f'Val rmse {model_rmse_val}')
+
+    return best_model_predictions, best_models
 
 
-def make_submission(test_ids, model_predictions):
+def make_submission(path, test_ids, model_predictions):
     """
     Creates a submission file from model predictions.
+    :param path: The file path to the save the predictions.
     :param test_ids: Game IDs from the test dataset.
     :param model_predictions: Predicted ratings from the model.
     """
     submission = pd.DataFrame()
     submission["game_id"] = test_ids
     submission["rating"] = model_predictions
-    submission.to_csv("PlayerRatingSubmission.csv", index=False)
+    submission.to_csv(path, index=False)
 
 
-def main():
+def load_model_catboost(path):
+    """
+    Load a CatBoost model from the specified file path.
+    :param path: The file path to the saved CatBoost model.
+    :return: CatBoostRegressor: An instance of the loaded CatBoostRegressor model.
+    """
+    catboost = CatBoostRegressor()
+    catboost.load_model(path)
+    return catboost
+
+
+def load_model_lgbm(path):
+    """
+    Load a LightGBM model from the specified file path.
+    :param path: The file path to the saved LightGBM model.
+    :return: The LightGBM model loaded from the file.
+    """
+    gbm_pickle = joblib.load(path)
+    return gbm_pickle
+
+
+def predict(lgbm, catboost, X_test):
+    """
+    Make predictions by combining the outputs of a LightGBM and a CatBoost model.
+    :param lgbm: The LightGBM model.
+    :param catboost: The CatBoost model.
+    :param X_test: The test data to make predictions on.
+    :return: The combined predictions from the LightGBM and CatBoost models.
+    """
+    catboost_preds = catboost.predict(X_test)
+    lgbm2_preds = lgbm.predict(X_test)
+    preds = lgbm2_preds * 0.6 + catboost_preds * 0.4
+    return preds
+
+
+def main(path_predictions, path_catboost, path_lgbm, train_model):
+    print('---------- Loading Data ----------')
+
     games = pd.read_csv("data/games.csv")
     turns = pd.read_csv("data/turns.csv")
     train = pd.read_csv("data/train.csv")
     test = pd.read_csv("data/test.csv")
 
+    print('---------- Preprocessing Data ----------')
+
     full_df = preprocess_data(train, test, games, turns)
     X, y, X_test, test_ids = split_data(full_df)
-    model_rmse, model_predictions, best_model = evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test,
-                                                                                                     n_splits=5)
-    print(model_rmse)
-    make_submission(test_ids, model_predictions)
+
+    if train_model:
+        print('---------- Finding Model and Tuning Hyperparameters ----------')
+        model_predictions, best_model = evaluate_models_with_kfold_and_hyperparameter_tuning(
+            X, y, X_test)
+    else:
+        print('---------- Using Preload Model and Predicting ----------')
+        catboost_model = load_model_catboost(path_catboost)
+        lgbm_model = load_model_lgbm(path_lgbm)
+        model_predictions = predict(lgbm_model, catboost_model, X_test)
+
+    print('---------- Done ----------')
+    make_submission(path_predictions, test_ids, model_predictions)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Run the main function with options for training and model paths.')
+
+    parser.add_argument('--path_predictions', type=str, default='predictions.csv',
+                        help='Path to save the prediction results.')
+    parser.add_argument('--path_catboost', type=str, default='catboost_model.cbm',
+                        help='Path to the pre-trained CatBoost model.')
+    parser.add_argument('--path_lgbm', type=str, default='lgbm_model.joblib',
+                        help='Path to the pre-trained LightGBM model.')
+    parser.add_argument('--train_model', action='store_true',
+                        help='If True, train the model. Otherwise, use pre-trained models for prediction.')
+
+    args = parser.parse_args()
+    main(args.path_predictions, args.path_catboost, args.path_lgbm, args.train_model)
