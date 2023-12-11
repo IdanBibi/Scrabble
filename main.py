@@ -256,8 +256,8 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, print_rms
         test_preds = best_models[name].predict(X_test)
         models_predictions[name] = test_preds
 
-    best_model_predictions = models_predictions['LGBMRegressor'] * 0.6 + models_predictions['CatBoostRegressor'] * 0.4
-
+    # best_model_predictions = models_predictions['LGBMRegressor'] * 0.6 + models_predictions['CatBoostRegressor'] * 0.4
+    best_model_predictions = models_predictions['CatBoostRegressor']
     if print_rmse:
         print(f'Train rmse {model_rmse_train}')
         print(f'Val rmse {model_rmse_val}')
@@ -308,8 +308,9 @@ def predict(lgbm, catboost, X_test):
     :return: The combined predictions from the LightGBM and CatBoost models.
     """
     catboost_preds = catboost.predict(X_test)
-    lgbm2_preds = lgbm.predict(X_test)
-    preds = lgbm2_preds * 0.6 + catboost_preds * 0.4
+  #  lgbm2_preds = lgbm.predict(X_test)
+  #  preds = lgbm2_preds * 0.6 + catboost_preds * 0.4
+    preds = catboost_preds
     return preds
 
 
@@ -343,11 +344,11 @@ def main(path_predictions, path_catboost, path_lgbm, train_model):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run the main function with options for training and model paths.')
 
-    parser.add_argument('--path_predictions', type=str, default='predictions.csv',
+    parser.add_argument('--path_predictions', type=str, default='predictions/predictions.csv',
                         help='Path to save the prediction results.')
-    parser.add_argument('--path_catboost', type=str, default='catboost_model.cbm',
+    parser.add_argument('--path_catboost', type=str, default='models/catboost_model.cbm',
                         help='Path to the pre-trained CatBoost model.')
-    parser.add_argument('--path_lgbm', type=str, default='lgbm_model.joblib',
+    parser.add_argument('--path_lgbm', type=str, default='models/lgbm_model.joblib',
                         help='Path to the pre-trained LightGBM model.')
     parser.add_argument('--train_model', action='store_true',
                         help='If True, train the model. Otherwise, use pre-trained models for prediction.')
