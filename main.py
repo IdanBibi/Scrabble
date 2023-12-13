@@ -14,9 +14,11 @@ from catboost import CatBoostRegressor
 from tqdm import tqdm
 import joblib
 import argparse
+from typing import List, Dict, Tuple, Any
+from pandas.core.groupby.generic import DataFrameGroupBy
 
 
-def categorize_location(locations, loc):
+def categorize_location(locations: Dict[str, List[str]], loc: str) -> int:
     """
     check if a location is in a predefined category.
     :param locations: a dictionary with locations and their category.
@@ -29,11 +31,11 @@ def categorize_location(locations, loc):
     return 0
 
 
-def is_first_winner(first, winner):
+def is_first_winner(first: str, winner: int) -> int:
     """
     Determine if the first participant is the winner.
     :param first: Name of the first participant.
-    :param winner: Indicator of the winner (0 for bot, 1 for human).
+    :param winner: Indicator of the winner
     :return: int: 1 if first is the winner, 0 otherwise.
     """
     bot_names = ['BetterBot', 'STEEBot', 'HastyBot']
@@ -42,7 +44,7 @@ def is_first_winner(first, winner):
     return 0
 
 
-def swap_elements(lst):
+def swap_elements(lst: List[str]) -> List[str]:
     """
     Swap numbers and letters in each location of the list.
     :param lst: List containing string elements with letters and numbers which represent the location on the board.
@@ -62,7 +64,7 @@ def swap_elements(lst):
     return swapped
 
 
-def bot_encoding(gr):
+def bot_encoding(gr: DataFrameGroupBy) -> pd.Series:
     """
     Encoding the bot name in each group
     :param gr: Grouped by object.
@@ -76,7 +78,7 @@ def bot_encoding(gr):
     return nicknames
 
 
-def feature_engineering_turns(turns):
+def feature_engineering_turns(turns: pd.DataFrame) -> pd.DataFrame:
     """
     Perform feature engineering on the 'turns' DataFrame.
     :param turns: turns dataframe which holds the information of the turns in each game.
@@ -136,7 +138,7 @@ def feature_engineering_turns(turns):
     return turns_groupby
 
 
-def merge_datasets(train, test, games, turns):
+def merge_datasets(train: pd.DataFrame, test: pd.DataFrame, games: pd.DataFrame, turns: pd.DataFrame) -> pd.DataFrame:
     """
     Merges all the given datasets.
     :param train: train dataset which holds the information about the train set.
@@ -176,7 +178,7 @@ def merge_datasets(train, test, games, turns):
     return full_df
 
 
-def split_data(data):
+def split_data(data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
     """
     Splits the given data into training and test sets based on the presence of ratings.
     :param data:
@@ -197,7 +199,7 @@ def split_data(data):
     return X, y, X_test, test_ids
 
 
-def preprocess_data(train, test, games, turns):
+def preprocess_data(train: pd.DataFrame, test: pd.DataFrame, games: pd.DataFrame, turns: pd.DataFrame) -> pd.DataFrame:
     """
     Performs preprocessing on the provided datasets for data analysis or modeling.
     :param train: train dataset which holds the information about the train set.
@@ -211,7 +213,11 @@ def preprocess_data(train, test, games, turns):
     return full_df
 
 
-def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, print_rmse=False):
+def evaluate_models_with_kfold_and_hyperparameter_tuning(
+        X: pd.DataFrame,
+        y: pd.Series,
+        X_test: pd.DataFrame,
+        print_rmse: bool = False) -> Tuple[Union[pd.Series, np.array], Any]:
     """
     Evaluates multiple models with K-Fold cross-validation and hyperparameter tuning.
     :param X: Features of the training set.
@@ -219,9 +225,8 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, print_rms
     :param X_test: Features of the test set.
     :param print_rmse: Boolean value which indicates if to print the rmse values.
     :return: A tuple containing three elements in the following order:
-           model_rmse (dict): Dictionary of RMSE values for each model.
            best_model_predictions (Series or array): Predictions made by the best model.
-           best_model (model object): The best performing model after tuning.
+           best_models (model object): The best performing model after tuning.
     """
     models = {
         'LGBMRegressor': LGBMRegressor(verbose=-1, objective='rmse'),
@@ -265,7 +270,7 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(X, y, X_test, print_rms
     return best_model_predictions, best_models
 
 
-def make_submission(path, test_ids, model_predictions):
+def make_submission(path: str, test_ids: pd.Series, model_predictions: Union[pd.Series, np.array]) -> None:
     """
     Creates a submission file from model predictions.
     :param path: The file path to the save the predictions.
@@ -278,7 +283,7 @@ def make_submission(path, test_ids, model_predictions):
     submission.to_csv(path, index=False)
 
 
-def load_model_catboost(path):
+def load_model_catboost(path: str) -> catboost:
     """
     Load a CatBoost model from the specified file path.
     :param path: The file path to the saved CatBoost model.
@@ -289,32 +294,29 @@ def load_model_catboost(path):
     return catboost
 
 
-def load_model_lgbm(path):
+def load_model_lgbm(path: str) -> lightgbm:
     """
     Load a LightGBM model from the specified file path.
     :param path: The file path to the saved LightGBM model.
     :return: The LightGBM model loaded from the file.
     """
-    gbm_pickle = joblib.load(path)
-    return gbm_pickle
+    lgbm_pickle = joblib.load(path)
+    return lgbm_pickle
 
 
-def predict(lgbm, catboost, X_test):
+def predict(catboost: catboost, X_test: pd.DataFrame) -> pd.Series:
     """
     Make predictions by combining the outputs of a LightGBM and a CatBoost model.
-    :param lgbm: The LightGBM model.
     :param catboost: The CatBoost model.
     :param X_test: The test data to make predictions on.
     :return: The combined predictions from the LightGBM and CatBoost models.
     """
     catboost_preds = catboost.predict(X_test)
-  #  lgbm2_preds = lgbm.predict(X_test)
-  #  preds = lgbm2_preds * 0.6 + catboost_preds * 0.4
     preds = catboost_preds
     return preds
 
 
-def main(path_predictions, path_catboost, path_lgbm, train_model):
+def main(path_predictions: str, path_catboost: str, train_model: bool) -> None:
     print('---------- Loading Data ----------')
 
     games = pd.read_csv("data/games.csv")
@@ -334,8 +336,7 @@ def main(path_predictions, path_catboost, path_lgbm, train_model):
     else:
         print('---------- Using Preload Model and Predicting ----------')
         catboost_model = load_model_catboost(path_catboost)
-        lgbm_model = load_model_lgbm(path_lgbm)
-        model_predictions = predict(lgbm_model, catboost_model, X_test)
+        model_predictions = predict(catboost_model, X_test)
 
     print('---------- Done ----------')
     make_submission(path_predictions, test_ids, model_predictions)
@@ -354,4 +355,4 @@ if __name__ == "__main__":
                         help='If True, train the model. Otherwise, use pre-trained models for prediction.')
 
     args = parser.parse_args()
-    main(args.path_predictions, args.path_catboost, args.path_lgbm, args.train_model)
+    main(args.path_predictions, args.path_catboost, args.train_model)
