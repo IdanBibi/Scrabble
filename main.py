@@ -14,7 +14,7 @@ from catboost import CatBoostRegressor
 from tqdm import tqdm
 import joblib
 import argparse
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Union
 from pandas.core.groupby.generic import DataFrameGroupBy
 
 
@@ -217,7 +217,8 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(
         X: pd.DataFrame,
         y: pd.Series,
         X_test: pd.DataFrame,
-        print_rmse: bool = False) -> Tuple[Union[pd.Series, np.array], Any]:
+        print_rmse: bool = False) -> Tuple[
+        Union[pd.Series, np.array], Dict[str, Union[LGBMRegressor, CatBoostRegressor]]]:
     """
     Evaluates multiple models with K-Fold cross-validation and hyperparameter tuning.
     :param X: Features of the training set.
@@ -226,7 +227,7 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(
     :param print_rmse: Boolean value which indicates if to print the rmse values.
     :return: A tuple containing three elements in the following order:
            best_model_predictions (Series or array): Predictions made by the best model.
-           best_models (model object): The best performing model after tuning.
+           best_models (dict): Dictionary of model name and best performing model.
     """
     models = {
         'LGBMRegressor': LGBMRegressor(verbose=-1, objective='rmse'),
@@ -261,7 +262,6 @@ def evaluate_models_with_kfold_and_hyperparameter_tuning(
         test_preds = best_models[name].predict(X_test)
         models_predictions[name] = test_preds
 
-    # best_model_predictions = models_predictions['LGBMRegressor'] * 0.6 + models_predictions['CatBoostRegressor'] * 0.4
     best_model_predictions = models_predictions['CatBoostRegressor']
     if print_rmse:
         print(f'Train rmse {model_rmse_train}')
@@ -283,7 +283,7 @@ def make_submission(path: str, test_ids: pd.Series, model_predictions: Union[pd.
     submission.to_csv(path, index=False)
 
 
-def load_model_catboost(path: str) -> catboost:
+def load_model_catboost(path: str) -> CatBoostRegressor:
     """
     Load a CatBoost model from the specified file path.
     :param path: The file path to the saved CatBoost model.
@@ -292,16 +292,6 @@ def load_model_catboost(path: str) -> catboost:
     catboost = CatBoostRegressor()
     catboost.load_model(path)
     return catboost
-
-
-def load_model_lgbm(path: str) -> lightgbm:
-    """
-    Load a LightGBM model from the specified file path.
-    :param path: The file path to the saved LightGBM model.
-    :return: The LightGBM model loaded from the file.
-    """
-    lgbm_pickle = joblib.load(path)
-    return lgbm_pickle
 
 
 def predict(catboost: catboost, X_test: pd.DataFrame) -> pd.Series:
